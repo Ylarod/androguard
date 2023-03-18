@@ -2377,7 +2377,7 @@ class ARSCResTableConfig:
     based on different properties of the device like locale or displaysize.
 
     See the definition of `ResTable_config` in
-    http://androidxref.com/9.0.0_r3/xref/frameworks/base/libs/androidfw/include/androidfw/ResourceTypes.h#911
+    http://aospxref.com/android-13.0.0_r3/xref/frameworks/base/libs/androidfw/include/androidfw/ResourceTypes.h#946
     """
     @classmethod
     def default_config(cls):
@@ -2460,6 +2460,12 @@ class ARSCResTableConfig:
                 logger.debug("This file does not have a screenConfig2! size={}".format(self.size))
                 self.screenConfig2 = 0
 
+            if self.size >= 56:
+                self.localeScriptWasComputed: bool = unpack("<?", buff.read(1))[0]
+
+            if self.size >= 57:
+                self.localeNumberingSystem = buff.read(8)
+
             self.exceedingSize = self.size - (buff.tell() - self.start)
             if self.exceedingSize > 0:
                 logger.debug("Skipping padding bytes!")
@@ -2504,8 +2510,22 @@ class ARSCResTableConfig:
                 ((kwargs.pop('screenWidthDp', 0) & 0xffff) << 0) + \
                 ((kwargs.pop('screenHeightDp', 0) & 0xffff) << 16)
 
-            # TODO add this some day...
-            self.screenConfig2 = 0
+            self.localeScript = \
+                kwargs.pop('localeScript', b"\0\0\0\0")
+
+            self.localeVariant = \
+                kwargs.pop('localeVariant', b"\0\0\0\0\0\0\0\0")
+
+            self.screenConfig2 = \
+                ((kwargs.pop('screenLayout2', 0) & 0xff) << 0) + \
+                ((kwargs.pop('colorMode', 0) & 0xff) << 8) + \
+                ((kwargs.pop('screenConfigPad2', 0) & 0xffff) << 16)
+
+            self.localeScriptWasComputed = \
+                kwargs.pop('localeScriptWasComputed', False)
+
+            self.localeNumberingSystem = \
+                kwargs.pop('localeNumberingSystem', b"\0\0\0\0\0\0\0\0")
 
             self.exceedingSize = 0
 
@@ -2530,11 +2550,34 @@ class ARSCResTableConfig:
         Returns the combined language+region string or \x00\x00 for the default locale
         :return:
         """
-        if self.locale != 0:
-            _language = self._unpack_language_or_region([self.locale & 0xff, (self.locale & 0xff00) >> 8, ], ord('a'))
-            _region = self._unpack_language_or_region([(self.locale & 0xff0000) >> 16, (self.locale & 0xff000000) >> 24, ], ord('0'))
+        if self.locale == 0:
+            return "\x00\x00"
+        language = [self.locale & 0xff, (self.locale & 0xff00) >> 8, ]
+        region = [(self.locale & 0xff0000) >> 16, (self.locale & 0xff000000) >> 24, ]
+        _language = self._unpack_language_or_region(language, ord('a'))
+        _region = self._unpack_language_or_region(region, ord('0'))
+        script_was_provided = (self.localeScript[0] != 0) and (not self.localeScriptWasComputed)
+        if not script_was_provided and not self.localeVariant[0] and not self.localeNumberingSystem[0]:
+            # legacy format
             return (_language + "-r" + _region) if _region else _language
-        return "\x00\x00"
+
+        # We are writing the modified BCP 47 tag.
+        # It starts with 'b+' and uses '+' as a separator.
+        output = "b+"
+        output += self._unpack_language_or_region(language, ord('a'))
+        if script_was_provided:
+            output += "+"
+            output += str(self.localeScript, 'utf-8')
+        if region[0] != 0:
+            output += "+"
+            output += _region
+        if self.localeVariant[0] != 0:
+            output += "+"
+            output += str(self.localeVariant, 'utf-8')
+        if self.localeNumberingSystem[0] != 0:
+            output += "+u+nu+"
+            output += str(self.localeNumberingSystem, 'utf-8')
+        return output
 
     def get_config_name_friendly(self):
         """
